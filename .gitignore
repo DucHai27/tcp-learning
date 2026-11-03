@@ -1,0 +1,6 @@
+.env
+*.class
+out/
+bin/
+.vscode/
+.idea/
