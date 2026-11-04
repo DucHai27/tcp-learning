@@ -5,54 +5,80 @@ import java.net.*;
 import java.nio.charset.StandardCharsets;
 
 public class Server {
+
+    private static int PORT = 5000;
+    private static int MAX_MESSAGE_BYTES = 65536;
     public static void main(String[] args) {
         try (ServerSocket serverSocket = new ServerSocket(5000)) {
-
-            System.out.println("Server is running on port 5000");
-
-            try (Socket clientSocket = serverSocket.accept()) {
-                System.out.println("Client is connected");
-                clientSocket.setSoTimeout(10000);
-
-                InputStream in = clientSocket.getInputStream();
-                OutputStream out = clientSocket.getOutputStream();
-
-                //Đọc dữ liệu gửi đến từ Client và ghi nó vào trong RAM của ByteArrayOutPutStream
-                byte[] buffer = new byte[8];
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                int byteRead;
-                int totalByte = 0;
+            System.out.println("Server is listening on port " + PORT);
+            try (Socket socket = serverSocket.accept()) {
+                System.out.println("Client connected to Server successful");
                 
-                while ((byteRead = in.read(buffer))!=-1) {
-                    baos.write(buffer,0,byteRead);
-                    totalByte += byteRead;
-                    System.out.println("Read: " + byteRead + " byte | TotalRead: " + totalByte + " byte");
-                    if (totalByte > 1024*1024) {
-                        throw new Exception("Message is too large");
-                    }
-                }
-                //Đọc dữ liệu từ RAM của ByteArrayOutputStream rồi đưa nó về dạng mảng byte thông thường để xử lý.
-                byte[] data = baos.toByteArray();
-                System.out.println("Size baos: " + baos.size());
-                String message = new String(data, StandardCharsets.UTF_8);
-                System.out.println("Received successful");
-                System.out.println("Payload: " + message);
+                InputStream in = socket.getInputStream();
+                OutputStream out = socket.getOutputStream();
 
-                //Gửi phản hồi về cho Client
-                String response = "Received " + data.length + " byte";
-                out.write(response.getBytes(StandardCharsets.UTF_8));
-                out.flush();
-                System.out.println("Responsed to Client");
+                while (true) {
+                    String message = readMessage(in);
+                    if (message == null) {
+                        System.out.println("Client closed connection");
+                        break;
+                    }
+                    System.out.println("Client: " + message);
+
+                    if (message.equalsIgnoreCase("QUIT")) {
+                        sendMessage(out,"BYE BYE");
+                        break;
+                    }
+                    sendMessage(out, "ACK: " + message);
+                }
 
             } catch (Exception e) {
                 System.out.println(e);
             }
-            serverSocket.close();
-            System.out.println("Server is closed");
-
+            
         } catch (Exception e) {
             // TODO: handle exception
             System.out.println(e);
         }
+    }
+
+    private static void readExactly(InputStream in, byte[] buffer, int offset, int length) throws Exception {
+        int total = 0;
+        while (total < length) {
+            int n = in.read(buffer, offset+total, length-total);
+            if (n == -1) throw new Exception("Connection is closed in the middle of a frame");
+            total += n; 
+        }
+    }
+
+    private static String readMessage(InputStream in) throws Exception{
+        byte[] header = new byte[4];
+        int n = in.read(header);
+        if (n == -1) return null;
+        readExactly(in, header, n, 4-n);
+        int length = ((header[0] & 0xFF) << 24) | ((header[1] & 0xFF) << 16) | ((header[2] & 0xFF) << 8) | (header[3] & 0xFF);
+        if (length <= 0 || length > MAX_MESSAGE_BYTES) {
+            throw new Exception("Invalid frame length: " + length);
+        }
+        byte[] payload = new byte[length];
+        readExactly(in, payload, 0, length);
+        return new String(payload, StandardCharsets.UTF_8);
+    }
+
+    private static void sendMessage(OutputStream out, String message) throws Exception{
+        byte[] payload = message.getBytes(StandardCharsets.UTF_8);
+        int length = payload.length;
+        if (length == 0 || length > MAX_MESSAGE_BYTES) {
+            throw new Exception("Invalid message length");
+        }
+        byte[] header = new byte[4];
+        header[0] = (byte) (length >> 24);
+        header[1] = (byte) (length >> 16);
+        header[2] = (byte) (length >> 8);
+        header[3] = (byte) (length);
+
+        out.write(header);
+        out.write(payload);
+        out.flush();   
     }
 }
