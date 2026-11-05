@@ -19,24 +19,25 @@ public class Client {
 
             Scanner sc = new Scanner(System.in, StandardCharsets.UTF_8);
             while (true) {
-                System.out.println("Enter the message: ");
+                // System.out.println("Enter the message: ");
+                System.out.println("Client>: ");
                 if (!sc.hasNextLine()) {
                     break;
                 }
-                String message = sc.nextLine();
-                if (message.isEmpty()) {
-                    System.out.println("Not send none message");
+                String request = sc.nextLine();
+                if (request.isEmpty()) {
+                    // System.out.println("Not send none message");
                     continue;
                 }
-                sendMessage(out, message);
+                sendFrame(out, request);
                 
-                String response = readMessage(in);
+                String response = readFrame(in);
                 if (response == null) {
                     System.out.println("Server closed connection");
                     break;
                 }
-                System.out.println("Server: " + response);
-                if (message.equalsIgnoreCase("QUIT")) {
+                System.out.println("Server> " + response);
+                if (request.equals("QUIT")) {
                     break;
                 }
             }
@@ -46,7 +47,7 @@ public class Client {
         
     }
 
-    private static void sendMessage(DataOutputStream dos, String message) throws Exception{
+    private static void sendFrame(DataOutputStream dos, String message) throws Exception{
         byte[] payload = message.getBytes(StandardCharsets.UTF_8);
         int length = payload.length;
         if (length <= 0 || length > MAX_MESSAGE_BYTES) {
@@ -57,7 +58,7 @@ public class Client {
         dos.flush();
     }
 
-    private static String readMessage(DataInputStream dis) throws Exception {
+    private static String readFrame(DataInputStream dis) throws Exception {
         int length = dis.readInt();
         if (length <= 0 || length > MAX_MESSAGE_BYTES) {
             throw new Exception("Invalid frame length: " + length);
