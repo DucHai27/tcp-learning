@@ -14,8 +14,8 @@ public class Client {
         try (Socket socket  = new Socket(HOST,PORT)) {
             System.out.println("Client connected to Server");
 
-            InputStream in = socket.getInputStream();
-            OutputStream out = socket.getOutputStream();
+            DataInputStream in = new DataInputStream(socket.getInputStream());
+            DataOutputStream out = new DataOutputStream(socket.getOutputStream());
 
             Scanner sc = new Scanner(System.in, StandardCharsets.UTF_8);
             while (true) {
@@ -46,46 +46,25 @@ public class Client {
         
     }
 
-    private static void sendMessage(OutputStream out, String message) throws Exception{
+    private static void sendMessage(DataOutputStream dos, String message) throws Exception{
         byte[] payload = message.getBytes(StandardCharsets.UTF_8);
         int length = payload.length;
-        if (length == 0 || length > MAX_MESSAGE_BYTES) {
-            throw new Exception("Invalid message length");
+        if (length <= 0 || length > MAX_MESSAGE_BYTES) {
+            throw new Exception("Invalid message length: " + length);
         }
-        byte[] header = new byte[4];
-        header[0] = (byte) (length >> 24);
-        header[1] = (byte) (length >> 16);
-        header[2] = (byte) (length >> 8);
-        header[3] = (byte) length;
-
-        out.write(header);
-        out.write(payload);
-        out.flush();
+        dos.writeInt(length);
+        dos.write(payload);
+        dos.flush();
     }
 
-    private static String readMessage(InputStream in) throws Exception {
-        byte[] header = new byte[4];
-        int n = in.read(header);
-        if (n == -1) return null;
-        readExactly(in, header, n, 4-n);
-        int length = ((header[0] & 0xFF) << 24) | ((header[1] & 0xFF) << 16) | ((header[2] & 0xFF) << 8) | (header[3] & 0xFF);
+    private static String readMessage(DataInputStream dis) throws Exception {
+        int length = dis.readInt();
         if (length <= 0 || length > MAX_MESSAGE_BYTES) {
             throw new Exception("Invalid frame length: " + length);
         }
         byte[] payload = new byte[length];
-        readExactly(in, payload, 0, length);
-        return new String(payload,StandardCharsets.UTF_8);
-    }
-
-    private static void readExactly(InputStream in, byte[] buffer, int offset, int length) throws Exception {
-        int total = 0;
-        while (total < length) {
-            int n = in.read(buffer,offset+total,length-total);
-            if (n == -1) {
-                throw new Exception("Connection is closed in the middle of a frame");
-            }
-            total += n;
-        }
+        dis.readFully(payload);
+        return new String(payload, StandardCharsets.UTF_8);
     }
 
 }
