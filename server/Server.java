@@ -3,120 +3,194 @@ package server;
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
+import java.util.*;
 
 public class Server {
+    private static final int PORT = 5000;
+    private static final int MAX_FRAME_BYTES = 65536;
+    private static final int MAX_CLIENTS = 8;
 
-    private static int PORT = 5000;
-    private static int MAX_MESSAGE_BYTES = 65536;
+    private static final ConcurrentHashMap<String, ClientHandler> online = new ConcurrentHashMap<>();
 
     public static void main(String[] args) {
-        try (ServerSocket serverSocket = new ServerSocket(5000)) {
-            System.out.println("Server is listening on port " + PORT);
-            try (Socket socket = serverSocket.accept()) {
-                System.out.println("Client connected to Server successful");
+        ExecutorService pool = Executors.newFixedThreadPool(MAX_CLIENTS);
+        Semaphore slots = new Semaphore(MAX_CLIENTS);
+        try (ServerSocket serverSocket = new ServerSocket(PORT)) {
+            System.out.println("Server is listening on port: " + PORT);
+            while (true) {
+                try {
+                    Socket socket = serverSocket.accept();
+                    if (!slots.tryAcquire()) {
+                        System.out.println("Server is full; rejecting a connection");
+                        socket.close();
+                        continue;
+                    }
+                    try {
+                        socket.setSoTimeout(120000);
+                        ClientHandler handler = new ClientHandler(socket);
+                        pool.execute(()->{
+                            try {
+                                handler.run();
+                            } finally {
+                                slots.release();
+                            }
+                        });
+                    } catch (Exception e) {
+                        System.out.println(e);
+                        slots.release();
+                        socket.close();
+                    }
 
-                DataInputStream in = new DataInputStream(socket.getInputStream());
-                DataOutputStream out = new DataOutputStream(socket.getOutputStream());
 
-                String username = null;
+                } catch (Exception e) {
+                    System.out.println(e);
+                }
+            }
 
+
+        } catch (Exception e) {
+            System.out.println(e);
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    public static class ClientHandler implements Runnable {
+        private final Socket socket;
+        private final DataInputStream in;
+        private final DataOutputStream out;
+
+        private final Object sendLock = new Object();
+        private String username;
+
+
+        ClientHandler(Socket socket) throws Exception {
+            this.socket = socket;
+            this.in = new DataInputStream(socket.getInputStream());
+            this.out = new DataOutputStream(socket.getOutputStream());
+        }
+
+        @Override 
+        public void run() {
+            try (socket) {
+                System.out.println("Connected: " + socket.getRemoteSocketAddress());
                 while (true) {
                     String request = readFrame(in);
-                    if (request == null) {
-                        System.out.println("Client closed connection");
-                        break;
-                    }
-                    System.out.println("Request: " + request);
-
-                    // Split command
                     int index = request.indexOf("|");
-                    String command;
-                    String body;
-
-                    if (index == -1) {
-                        command = request;
-                        body = "";
-                    } else {
-                        command = request.substring(0, index);
-                        body = request.substring(index + 1);
-                    }
-
+                    String command = (index == -1) ? request : request.substring(0,index);
+                    String body = (index == - 1) ? "" : request.substring(index+1);
                     switch (command) {
                         case "HELLO":
                             if (username != null) {
-                                sendFrame(out, "409|Already registed");
+                                send("409|Already registed");
                             } else if (body.isBlank() || body.length() > 20 || body.contains("|")) {
-                                sendFrame(out, "400|Invalid username");
+                                send("400|Invalid username");
+                            } else if (online.putIfAbsent(body, this) != null) {
+                                send("409|Username already in use");
                             } else {
                                 username = body;
-                                sendFrame(out, "200|OK: Welcome " + username);
+                                send("200|OK: WELCOME " + username);
+                                System.out.println(username + " JOINED");
                             }
                             break;
-
-                        case "SEND_MESSAGE":
-                            if (username == null) {
-                                sendFrame(out, "400|Empty message");
-                            } else {
-                                System.out.println(username + ": " + body);
-                                sendFrame(out, "200|OK received from " + username + body);
-                            }
-                            break;
-
-                        case "QUIT":
-                            if (!body.isEmpty()) {
-                                sendFrame(out, "400|QUIT takes no payload");
-                                break;
-                            }
-                            sendFrame(out, "200|GOOD BYE");
-                            System.out.println("Client left...");
-                            break;
-
-                        // bonus
-                        case "PING":
-                            sendFrame(out, "200|PONG");
-                            break;
-
+                        
                         case "WHOAMI":
                             if (username == null) {
-                                sendFrame(out, "401|Not found");
-
+                                send("401|Please HELLO first");
                             } else {
-                                sendFrame(out, "200|OK username: " + username);
+                                send("200|" + username);
+                            }
+                            break;
+                        
+                        case "SEND_MESSAGE":
+                            if (username == null) {
+                                send("401|Please HELLO first");
+                            } else if (body.isBlank()) {
+                                send("400|Empty message");
+                            } else {
+                                send("200|OK Message accepted");
+                                broadcast("EVENT" + username + "|" + body);
+                            }
+                        case "LIST_USERS":
+                            if (username == null) {
+                                send("401|Please HELLO first");
+                            } else {
+                                ArrayList<String> users = new ArrayList<>(online.keySet());
+                                Collections.sort(users);
+                                send("200|OK online: " + String.join(", ", users));
                             }
 
                             break;
+                        
+                        case "QUIT":
+                            if (!body.isEmpty()) {
+                                send("400|QUIT take no payload");
+                                break;
+                            }
+                            send("200|OK: GOODBYE");
+                            return;
 
                         default:
-                            sendFrame(out, "400|Unknow command");
+                            send("400|Unknow command");
                             break;
+                    } 
+                }
+            } catch (Exception e) {
+               System.out.println(e);
+            } finally {
+                if (username != null) {
+                    online.remove(username,this);
+                    System.out.println(username + " left...");
+                }
+            }
+        }
+
+        public void send(String message) throws Exception {
+            synchronized (sendLock) {
+                sendFrame(out, message);
+            }
+        }
+
+        public void broadcast(String event) {
+            for (ClientHandler receiver : online.values()) {
+                if (receiver == this) continue;
+                try {
+                    receiver.send(event);
+                } catch (Exception e) {
+                    // TODO: handle exception
+                    System.out.println("Broadcast failed: " + e.getMessage());
+                    try {
+                        receiver.socket.close();
+                    } catch (Exception ignored) {
+                        // TODO: handle exception
                     }
                 }
-
-            } catch (Exception e) {
-                System.out.println(e);
             }
-
-        } catch (Exception e) {
-            // TODO: handle exception
-            System.out.println(e);
         }
-    }
 
-    private static String readFrame(DataInputStream dis) throws Exception {
-        int length = dis.readInt();
-        if (length <= 0 || length > MAX_MESSAGE_BYTES) {
-            throw new Exception("Invalid frame length: " + length);
+        public String readFrame(DataInputStream in) throws Exception{
+            int length = in.readInt();
+            if (length <= 0 || length > MAX_FRAME_BYTES) {
+                throw new Exception("Invalid frame length: " + length);
+            }
+            byte[] payload = new byte[length];
+            in.readFully(payload);
+            return new String(payload, StandardCharsets.UTF_8);
         }
-        byte[] payload = new byte[length];
-        dis.readFully(payload);
-        return new String(payload, StandardCharsets.UTF_8);
-    }
 
-    private static void sendFrame(DataOutputStream dos, String message) throws Exception {
-        byte[] payload = message.getBytes(StandardCharsets.UTF_8);
-        int length = payload.length;
-        dos.writeInt(length);
-        dos.write(payload);
-        dos.flush();
+        public void sendFrame(DataOutputStream out, String message) throws Exception {
+            byte[] payload = message.getBytes();
+            int length = payload.length;
+            if (length <= 0 || length > MAX_FRAME_BYTES) {
+                throw new Exception("Invalid message length: " + length);
+            }
+            out.writeInt(length);
+            out.write(payload);
+            out.flush();
+        }
     }
 }
